@@ -242,6 +242,11 @@ Todos usan `#[tokio::test]` donde hay async y no requieren red:
   proceso puede acceder a red, leer variables de entorno o escribir fuera del workspace. El
   confinamiento de rutas aplica a las tools que resuelven rutas, no a procesos que el modelo
   decida lanzar. Para ejecución no confiable hace falta aislamiento del sistema operativo.
+- `bash` bufferiza **toda** la salida en memoria antes de truncarla a 20 000 caracteres: un
+  proceso muy hablador puede consumir memoria. Tampoco mata el grupo de procesos al vencer el
+  timeout, así que un nieto en segundo plano puede sobrevivir.
+- Si el proceso muere entre `tool/call` y `tool/result`, el log queda sin reconciliar y reanudar
+  esa sesión reenviaría historial inválido al proveedor. No hay reparación automática todavía.
 
 ## Estado verificado
 
