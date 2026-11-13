@@ -12,6 +12,7 @@ dshrs-llm.workspace = true
 dshrs-session.workspace = true
 dshrs-tools.workspace = true
 futures-util.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

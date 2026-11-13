@@ -1,7 +1,7 @@
 # harness-rs — esqueleto de harness de agentes de código en Rust
 
 > **Estado: compilado y verificado en macOS aarch64 con Rust 1.100.0.**
-> `cargo check --workspace` y `cargo test --workspace` pasan (29 tests). El modo
+> `cargo check --workspace` y `cargo test --workspace` pasan (34 tests). El modo
 > `--bench-protocol` se verificó de punta a punta contra un endpoint SSE local, incluido
 > el camino feliz y la cancelación con `stop`. **No** se probó contra un proveedor real,
 > Docker ni una imagen de tarea; el comportamiento del repositorio en Linux sigue sin
@@ -14,12 +14,12 @@ un **log append-only como fuente de verdad**, un **bucle turno→paso** que no g
 en memoria, y dos **seams** claros (proveedor LLM y herramientas). No es una reimplementación de DSH:
 es un banco de pruebas legible para medir y comparar harnesses (por ejemplo, contra el benchmark
 Python de este repo vía el protocolo `aqp-agent-v1`, documentado en [docs/PROTOCOL.md](docs/PROTOCOL.md)
-pero **aún no implementado**).
+e implementado por `harn --bench-protocol`).
 
 Objetivos:
 
 - Código pequeño y legible; sin `unsafe`; sin dependencias exóticas.
-- Límites de seguridad reales (workspace confinado, argv-only, sin claves en el log).
+- Defensas de rutas (no es un sandbox), entorno de hijos con allowlist y secretos redactados en el log.
 - Tests unitarios que fijen las invariantes importantes (log, historial derivado, edición atómica, `max_steps`).
 
 ## Estructura
@@ -86,7 +86,7 @@ OPENAI_API_KEY=... cargo run -p dshrs-cli -- \
 | `--once "<prompt>"` | Ejecuta un turno y termina. |
 | `--config <path>` | TOML de configuración. Default `<cwd>/harn.toml` si existe. |
 | `--max-steps <n>` | Máximo de llamadas al proveedor por turno. Default 16. |
-| `--bench-protocol` | Modo headless `aqp-agent-v1`: lee un `prompt` JSONL por stdin y emite `agent_start`/`message`/`agent_end`/`done` por stdout. Lo usa el benchmark; incompatible con `--once`. |
+| `--bench-protocol` | Modo headless `aqp-agent-v1`: lee un `prompt` JSONL por stdin (incluido `model`) y emite `agent_start`/`message`/`agent_end`/`done` por stdout. Usa `AQP_GATEWAY_URL`/`AQP_GATEWAY_TOKEN` por defecto; incompatible con `--once`. |
 
 ### Variables de entorno
 
@@ -181,23 +181,21 @@ si el proceso muere, el historial se reconstruye exactamente desde disco.
 
 ## Roadmap
 
-### Fase 1 — esqueleto ejecutable (este código, pendiente de compilar)
+### Fase 1 — esqueleto ejecutable (completada)
 
-1. `cargo check`/`cargo test` limpios en las 6 crates.
-2. Smoke test manual del REPL contra un endpoint local compatible con OpenAI.
-3. Arreglar lo que descubra el compilador (especialmente el parseo SSE y los tipos del
-   `OpenAiCompatible`/CLI; el `Waterfall` usa continuaciones boxeadas `'static` a propósito para
-   evitar firmas con lifetimes de rango superior).
+1. `cargo check`/`cargo test` limpios en las 6 crates (32 tests, Rust 1.100.0). ✅
+2. Smoke test manual contra un endpoint local compatible con OpenAI (turno feliz y cancelación). ✅
+3. Ajustes del compilador ya aplicados (SSE, `OpenAiCompatible`, CLI, `Waterfall`). ✅
 
-### Fase 2 — integración con el benchmark
+### Fase 2 — integración con el benchmark (en curso)
 
-1. Implementar el protocolo `aqp-agent-v1` sobre stdin/stdout con una crate `protocol` (o un
-   submódulo del CLI) y un adaptador `AgentLoop` ↔ mensajes del protocolo.
-2. Streaming de `message` por `TextDelta`, `input_request` desde una tool de pregunta,
-   `done` con `stop_reason` traducido.
-3. Apuntar `--base-url`/`--model` al gateway del benchmark y ejecutar la suite Python sin tocar
-   `aqp_bench/` (el harness se mide como proceso externo).
-4. Logs del harness a stderr; stdout exclusivamente protocolo.
+1. `aqp-agent-v1` implementado en `crates/cli/src/bench.rs` (`--bench-protocol`). ✅
+2. `message` una vez por turno y `done` con `stop_reason` traducido. ✅
+   Pendiente: `input_request` desde una tool de pregunta (hoy las tools se autoaprueban) y
+   `message` por delta si se quiere progreso en vivo.
+3. Pendiente: apuntar `--base-url`/`--model` al gateway del benchmark y correr una campaña real
+   en Linux+Docker (el harness se mide como proceso externo `kind=command`).
+4. Logs del harness a stderr; stdout exclusivamente protocolo. ✅
 
 ### Fase 3 — madurez tipo DSH
 
@@ -208,7 +206,7 @@ si el proceso muere, el historial se reconstruye exactamente desde disco.
 4. MCP como fuente de herramientas, manteniendo el mismo trait `Tool`.
 5. Presupuesto de tokens, retries/backoff y timeout por request.
 
-## Tests incluidos (sin ejecutar todavía)
+## Tests incluidos (ejecutados con `cargo test --workspace`)
 
 Todos usan `#[tokio::test]` donde hay async y no requieren red:
 
@@ -229,16 +227,30 @@ Todos usan `#[tokio::test]` donde hay async y no requieren red:
 
 - Las rutas de tools se validan dos veces: léxicamente y por canonicalización contra la raíz.
 - `bash` no interpreta una shell: no hay inyección de comandos vía argumentos.
-- Timeout por comando (default 30 s) y `kill_on_drop`.
-- La API key no se registra en ningún evento del log; el log solo guarda modelo y cwd.
-- No es un sandbox real: un proceso ejecutado con `bash` todavía puede acceder a red, leer
-  variables de entorno o escapar del workspace mediante el propio binario. Para ejecución no
-  confiable hace falta aislamiento del sistema operativo.
+- Timeout por comando (default 30 s) y `kill_on_drop`, que mata **el proceso lanzado**, no su
+  árbol de hijos: un hijo en segundo plano puede sobrevivir y no hay grupo de procesos.
+- `EditTool` conserva los permisos del archivo original (modo incluido) al reemplazarlo.
+- Los ejecutables lanzados por `bash` reciben `env_clear()` + allowlist (`PATH`, `HOME`, `LANG`,
+  `LC_ALL`, `TERM`, `TMPDIR`): no ven la API key ni `AQP_GATEWAY_TOKEN`.
+- Los valores de credenciales conocidas (API key y capability del gateway) se redactan como
+  `[redacted]` antes de persistirse en el session log, aunque aparezcan en la salida de una tool.
+- En `--bench-protocol` no se auto-descubre `harn.toml` del workspace (input no confiable) y el
+  session log va por defecto a un temporal fuera del workspace.
+- El log sí guarda mensajes, tool calls y resultados de tools (es su propósito); no prometas
+  confidencialidad del contenido del workspace.
+- No es un sandbox real: `bash` es argv-only, pero cualquier argv puede ser `sh -c '...'`, y un
+  proceso puede acceder a red, leer variables de entorno o escribir fuera del workspace. El
+  confinamiento de rutas aplica a las tools que resuelven rutas, no a procesos que el modelo
+  decida lanzar. Para ejecución no confiable hace falta aislamiento del sistema operativo.
 
-## Estado: NO compilado ni verificado (no hay toolchain Rust en la máquina donde se generó)
+## Estado verificado
 
-**NO compilado ni verificado (no hay toolchain Rust en la máquina donde se generó).** Las versiones
-de dependencias se fijaron a majors estables (tokio 1, serde 1, clap 4, reqwest 0.12, async-trait 0.1,
-thiserror 1, futures-util 0.3, tracing 0.1, toml 0.8, tokio-util 0.7) y el código evita características
-exóticas, pero pueden existir errores de compilación o de tipos. El primer paso en una máquina con
-Rust debe ser `cargo test --workspace` y corregir lo que aparezca.
+- **Compila y pasa tests** en macOS aarch64 con Rust 1.100.0: `cargo check --workspace`,
+  `cargo test --workspace` (32 tests), `cargo clippy --workspace --all-targets` y
+  `cargo fmt --all -- --check` limpios.
+- **Protocolo `aqp-agent-v1`** verificado de punta a punta contra un endpoint SSE local:
+  turno feliz (`agent_start` → `message` → `agent_end` → `done`) y cancelación con `stop`.
+- **No verificado**: Linux, proveedor real (DeepSeek/OpenAI), Docker, imagen de tarea y una
+  campaña completa del benchmark. Tampoco hay `input_request` (fase 2).
+- El toolchain usado para verificar se instaló en `/tmp` (efímero). Para persistirlo:
+  `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.

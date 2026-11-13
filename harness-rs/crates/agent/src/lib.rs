@@ -50,6 +50,7 @@ pub struct AgentLoop {
     system_prompt: Option<String>,
     cancellation: CancellationToken,
     event_bus: Option<EventBus>,
+    redactions: Vec<String>,
 }
 
 impl AgentLoop {
@@ -68,6 +69,7 @@ impl AgentLoop {
             system_prompt: None,
             cancellation: CancellationToken::new(),
             event_bus: None,
+            redactions: Vec::new(),
         }
     }
 
@@ -88,6 +90,17 @@ impl AgentLoop {
 
     pub fn with_event_bus(mut self, event_bus: EventBus) -> Self {
         self.event_bus = Some(event_bus);
+        self
+    }
+
+    /// Values that must never be persisted into the session log (they would
+    /// otherwise reach the model prompt and the exported artifacts). Tool output
+    /// is model-visible by design, so redaction happens at the log boundary.
+    pub fn with_redactions(mut self, redactions: Vec<String>) -> Self {
+        self.redactions = redactions
+            .into_iter()
+            .filter(|item| !item.is_empty())
+            .collect();
         self
     }
 
@@ -297,14 +310,49 @@ impl AgentLoop {
     }
 
     async fn append(&self, event: SessionEvent) -> Result<(), AgentError> {
+        let event = self.redact(event);
         self.log.lock().await.append(&event)?;
         Ok(())
+    }
+
+    fn redact(&self, event: SessionEvent) -> SessionEvent {
+        if self.redactions.is_empty() {
+            return event;
+        }
+        let Ok(mut value) = serde_json::to_value(&event) else {
+            return event;
+        };
+        redact_json(&mut value, &self.redactions);
+        serde_json::from_value(value).unwrap_or(event)
     }
 
     fn emit(&self, event: HarnessEvent) {
         if let Some(event_bus) = &self.event_bus {
             event_bus.emit(event);
         }
+    }
+}
+
+fn redact_json(value: &mut serde_json::Value, redactions: &[String]) {
+    match value {
+        serde_json::Value::String(text) => {
+            for secret in redactions {
+                if text.contains(secret.as_str()) {
+                    *text = text.replace(secret.as_str(), "[redacted]");
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            items
+                .iter_mut()
+                .for_each(|item| redact_json(item, redactions));
+        }
+        serde_json::Value::Object(fields) => {
+            fields
+                .values_mut()
+                .for_each(|item| redact_json(item, redactions));
+        }
+        _ => {}
     }
 }
 

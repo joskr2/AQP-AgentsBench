@@ -115,26 +115,23 @@ Notas:
 - `done` es el único mensaje terminal. Después de `done` el agente queda en `IDLE` esperando otro
   `prompt`.
 
-## Cómo se implementaría aquí (futuro)
+## Cómo está implementado en `harn`
 
-El esqueleto actual ya tiene las piezas necesarias; la Fase 2 del roadmap las conecta:
-
-| Pieza del protocolo | Pieza existente del harness |
+| Pieza del protocolo | Implementación |
 | --- | --- |
-| `prompt` → ejecutar un turno | `AgentLoop::run_turn(input)` (`crates/agent`). |
-| `message` (streaming) | `HarnessEvent::TextDelta` en `crates/kernel`; suscripción al `EventBus`. |
-| `done` (`end_turn`, `error`) | `TurnOutcome { stop_reason }`; `StopReason::Error` para fallos. |
-| `stop` | `CancellationToken` pasado a `AgentLoop::with_cancellation`; el bucle termina con `StopReason::Cancelled`. |
-| `input_request` / `answer` | Requiere una tool nueva ("ask user") que emita la petición y espere el `answer`; hoy **no existe**. |
-| `agent_start` / `agent_end` | Se derivan de `HarnessEvent::TurnStarted` / `TurnFinished`. |
-| stdout JSONL / stderr logs | El CLI actual imprime en stdout/stderr humanos; el modo protocolo escribiría solo JSON en stdout. |
+| `prompt` → un turno | `crates/cli/src/bench.rs`: lee el record y llama `AgentLoop::run_turn(input)`. |
+| `model` del `prompt` | Se usa para construir el provider de ESE turno (matriz de modelos del benchmark); si falta, cae al modelo por defecto. |
+| `message` | Un record por turno con el texto completo (`TurnOutcome.text`). Streaming por delta queda para fase 2. |
+| `done` | `end_turn` desde `StopReason::EndTurn`; el resto (`max_steps`, `cancelled`, error de provider) se emite como `error` con mensaje. |
+| `stop` | `CancellationToken` del `AgentLoop`; el turno termina `cancelled` y se emite `done(error)`. |
+| `input_request` / `answer` | **No implementado** (fase 2): las tools se autoaprueban; los `answer` se aceptan y se ignoran. |
+| Config/endpoint | `AQP_GATEWAY_URL` y `AQP_GATEWAY_TOKEN` del entorno del benchmark, o flags explícitos. |
 
-Pendiente de decidir en esa fase:
+Notas de confianza: en modo protocolo **no** se auto-descubre `harn.toml` desde el workspace
+(que es input de la tarea y puede ser no confiable); solo se carga con `--config` explícito.
+El session log interno va por defecto a un fichero temporal fuera del workspace, y los valores de
+las credenciales conocidas se redactan antes de persistirse.
 
-- ¿El adaptador vive en el CLI (`harn --protocol aqp-agent-v1`) o en una crate `protocol` aparte?
-- ¿`agent_id` se mantiene fijo (`"main"`) o se deriva de una sesión?
-- ¿Los `message` se emiten por delta o agregados por paso (el protocolo permite ambos)?
-- ¿Qué `metadata` estandariza `input_request` (p. ej. `path`, `options`, `default`)?
-
-Cualquier cambio en este documento debería tratarse como un cambio de protocolo versionado
-(`aqp-agent-v2` si es incompatible).
+Pendiente para fase 2: `input_request` desde una tool de pregunta, `message` por delta, `agent_id`
+derivado de sesión, y estandarizar `metadata`. Cualquier cambio incompatible debe versionarse
+(`aqp-agent-v2`).

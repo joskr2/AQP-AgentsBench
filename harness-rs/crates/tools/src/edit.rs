@@ -6,6 +6,9 @@ use serde_json::{json, Value};
 
 use crate::{paths, Tool, ToolContext, ToolError};
 
+/// Same bound the read tool applies; editing a huge file is never the intent.
+const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
+
 /// Replaces exactly one literal occurrence and writes atomically.
 ///
 /// Ambiguity is an error: if `old_string` appears zero or multiple times the
@@ -87,6 +90,12 @@ impl Tool for EditTool {
         }
 
         let path = paths::resolve_existing_file(ctx, raw_path)?;
+        let size = std::fs::metadata(&path)?.len();
+        if size > MAX_EDIT_BYTES {
+            return Err(ToolError::InvalidArgs(format!(
+                "file is too large to edit ({size} bytes, limit {MAX_EDIT_BYTES})"
+            )));
+        }
         let content = std::fs::read_to_string(&path)?;
 
         let occurrences = content.match_indices(old_string).count();
@@ -120,6 +129,13 @@ fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), ToolError> {
         ))
     })?;
 
+    // A rename replaces the inode, so a fresh temporary file would silently
+    // reset an executable or read-only file to the default mode. Keep the
+    // original permissions when the target already exists.
+    let permissions = std::fs::metadata(target)
+        .map(|metadata| metadata.permissions())
+        .ok();
+
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
@@ -133,6 +149,9 @@ fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), ToolError> {
             .open(&temporary)?;
         file.write_all(contents)?;
         file.sync_all()?;
+        if let Some(permissions) = &permissions {
+            std::fs::set_permissions(&temporary, permissions.clone())?;
+        }
         Ok(())
     })();
 
@@ -309,5 +328,25 @@ mod tests {
             })
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_preserves_the_original_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let workspace = TempWorkspace::new("mode");
+        let path = workspace.root().join("run.sh");
+        std::fs::write(&path, "#!/bin/sh\necho old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        atomic_write(&path, b"#!/bin/sh\necho new\n").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "#!/bin/sh\necho new\n"
+        );
     }
 }

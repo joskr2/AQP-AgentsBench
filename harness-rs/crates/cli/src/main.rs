@@ -32,11 +32,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are harn, a small coding agent. Use the
      and edit files inside the workspace. Prefer small, verifiable steps.";
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "harn",
-    version,
-    about = "A minimal Rust coding-agent harness (skeleton, not compiled)"
-)]
+#[command(name = "harn", version, about = "A minimal Rust coding-agent harness")]
 struct Cli {
     /// Model name sent to the OpenAI-compatible endpoint.
     #[arg(long)]
@@ -84,7 +80,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some(path) => std::fs::canonicalize(path)?,
         None => env::current_dir()?,
     };
-    let config = load_config(&cli, &cwd)?;
+    // A benchmark workspace is task input and may be untrusted, so protocol
+    // mode never advertises or auto-loads a workspace config file.
+    let config = load_config(&cli, &cwd, !cli.bench_protocol)?;
 
     let model = cli
         .model
@@ -95,6 +93,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let base_url = cli
         .base_url
         .clone()
+        .or_else(|| {
+            if cli.bench_protocol {
+                env_string("AQP_GATEWAY_URL")
+            } else {
+                None
+            }
+        })
         .or_else(|| env_string("HARN_BASE_URL"))
         .or(config.base_url)
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
@@ -103,7 +108,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .clone()
         .or(config.api_key_env)
         .unwrap_or_else(|| DEFAULT_API_KEY_ENV.to_string());
-    let api_key = env_string(&api_key_env);
+    let api_key = if cli.bench_protocol {
+        // The benchmark hands the container an ephemeral gateway capability.
+        env_string("AQP_GATEWAY_TOKEN").or_else(|| env_string(&api_key_env))
+    } else {
+        env_string(&api_key_env)
+    };
     if api_key.is_none() {
         eprintln!(
             "warning: environment variable {api_key_env} is not set; requests are sent without an Authorization header"
@@ -119,8 +129,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let session_path = match &cli.session {
         Some(path) => path.clone(),
+        // Never write harness state into the task workspace: it would pollute
+        // the evaluated diff and become model-readable.
+        None if cli.bench_protocol => bench_session_path(),
         None => default_session_path(&cwd),
     };
+
+    let mut redactions: Vec<String> = Vec::new();
+    if let Some(key) = &api_key {
+        redactions.push(key.clone());
+    }
+    if let Some(token) = env_string("AQP_GATEWAY_TOKEN") {
+        redactions.push(token);
+    }
+
+    if cli.bench_protocol {
+        if cli.once.is_some() {
+            return Err("--bench-protocol and --once are mutually exclusive".into());
+        }
+        return bench::run(bench::BenchConfig {
+            cwd,
+            base_url,
+            api_key,
+            default_model: model,
+            session_path,
+            system_prompt,
+            max_steps,
+            redactions,
+        })
+        .await;
+    }
 
     let provider = OpenAiCompatible::new(base_url.clone(), model.clone(), api_key)?;
     let context = ToolContext::new(cwd.clone())?;
@@ -152,13 +190,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         session_path.display()
     );
 
-    if cli.bench_protocol {
-        if cli.once.is_some() {
-            return Err("--bench-protocol and --once are mutually exclusive".into());
-        }
-        return bench::run(&agent).await;
-    }
-
     let result = match cli.once.as_deref() {
         Some(prompt) => run_once(&agent, prompt).await,
         None => run_repl(&agent).await,
@@ -167,9 +198,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_config(cli: &Cli, cwd: &Path) -> Result<Config, ConfigError> {
+fn load_config(cli: &Cli, cwd: &Path, allow_workspace_config: bool) -> Result<Config, ConfigError> {
     match &cli.config {
         Some(path) => Config::load(path),
+        None if !allow_workspace_config => Ok(Config::default()),
         None => {
             let default_path = cwd.join("harn.toml");
             if default_path.is_file() {
@@ -183,6 +215,12 @@ fn load_config(cli: &Cli, cwd: &Path) -> Result<Config, ConfigError> {
 
 fn env_string(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn bench_session_path() -> PathBuf {
+    std::env::temp_dir()
+        .join("harn")
+        .join(format!("bench-{}.jsonl", std::process::id()))
 }
 
 fn default_session_path(cwd: &Path) -> PathBuf {

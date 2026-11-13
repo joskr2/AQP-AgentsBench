@@ -13,6 +13,12 @@ use crate::{paths, truncate_output, Tool, ToolContext, ToolError};
 /// * `argv` (required): non-empty array of strings.
 /// * `cwd` (optional): directory relative to the workspace root.
 /// * `timeout_ms` (optional): overrides the context timeout.
+const MAX_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
+/// The only host variables a model-chosen executable may see. Notably this
+/// excludes provider keys, gateway capabilities, and harness bookkeeping.
+const CHILD_ENV_ALLOWLIST: [&str; 6] = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR"];
+
 #[derive(Debug, Default)]
 pub struct BashTool;
 
@@ -48,7 +54,8 @@ impl Tool for BashTool {
                 "timeout_ms": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Optional timeout for this command in milliseconds."
+                    "maximum": 600000,
+                    "description": "Optional timeout for this command in milliseconds (capped at 10 minutes)."
                 }
             },
             "required": ["argv"],
@@ -67,7 +74,7 @@ impl Tool for BashTool {
         let timeout = args
             .get("timeout_ms")
             .and_then(Value::as_u64)
-            .map(Duration::from_millis)
+            .map(|millis| Duration::from_millis(millis.min(MAX_TIMEOUT_MS)))
             .unwrap_or(ctx.default_timeout);
 
         tracing::debug!(?argv, cwd = %cwd.display(), "running bash tool");
@@ -79,6 +86,14 @@ impl Tool for BashTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // Never hand the harness environment (which holds the provider key and
+        // the benchmark gateway token) to a model-chosen executable.
+        command.env_clear();
+        for key in CHILD_ENV_ALLOWLIST {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
 
         let child = command.spawn().map_err(|error| {
             ToolError::Failed(format!("failed to spawn {:?}: {error}", argv[0]))
@@ -129,7 +144,6 @@ fn parse_argv(args: &Value) -> Result<Vec<String>, ToolError> {
     }
     Ok(argv)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +217,24 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ToolError::Denied(_)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_environment_is_an_allowlist() {
+        let workspace = TempWorkspace::new("env");
+        let ctx = ToolContext::new(workspace.root()).unwrap();
+        // A unique variable in the parent must not reach a model-chosen binary.
+        std::env::set_var("AQP_TEST_CHILD_SECRET", "must-not-leak");
+        let output = BashTool::new()
+            .execute(json!({"argv": ["env"]}), &ctx)
+            .await
+            .unwrap();
+        std::env::remove_var("AQP_TEST_CHILD_SECRET");
+        assert!(
+            !output.contains("AQP_TEST_CHILD_SECRET"),
+            "output: {output}"
+        );
+        assert!(output.contains("PATH="), "output: {output}");
     }
 }
