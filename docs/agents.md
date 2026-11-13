@@ -149,14 +149,17 @@ Agent → harness records:
 | `{"type":"agent_end","agent_id":"main"}` | Optional lifecycle end; the adapter emits a normalized `agent_end` if absent |
 | `{"type":"message","text":"..."}` | Text progress |
 | `{"type":"input_request","request_id":"<id>","question":"...","metadata":{...}}` | Requests a human reply; the adapter calls `ask(question, metadata)` and writes the `answer` record with the returned value |
-| `{"type":"done","stop_reason":"end_turn"}` | Terminal success |
+| `{"type":"done","stop_reason":"end_turn"}` | Terminal success; any other `stop_reason` is a failure |
 | `{"type":"done","stop_reason":"error","error":"..."}` | Terminal failure; the adapter raises `RuntimeError` with that message |
 
 Rules:
 
 - Accepting the prompt is not completion. The adapter waits for `done`; stdout
   EOF before `done` is an error that reports the exit code and bounded stderr.
-- Unknown record types are ignored so future protocol extensions stay compatible.
+- Only `stop_reason: "end_turn"` is success. `error`, `aborted`, `max_tokens`, `length`,
+  `cancelled`, or a missing reason fail the run with the reported detail.
+- Protocol lines are capped at 1 MiB; duplicates of one `request_id` are ignored; unknown record
+  types are ignored so future extensions stay compatible.
 - Human callbacks run on a separate thread: a slow or failing `ask` never blocks
   the stdout reader. Each `input_request` is surrounded by normalized
   `agent_wait`/`agent_resume` events; reply errors surface as a `RuntimeError`.
@@ -169,6 +172,12 @@ Rules:
   record to route every request through the benchmark gateway; otherwise model
   routing and gateway coverage are the harness's own responsibility and must not
   be claimed.
+- Treat the task workspace as untrusted input: do not read the gateway endpoint
+  or credentials from repository files, and keep harness state outside the
+  workspace so it cannot pollute the evaluated diff.
+- `answer.value` is JSON, but the runner validates it against the question
+  metadata before returning it: confirmations become booleans, permission
+  replies stay strings, and OpenCode question groups need `string[][]`.
 
 Minimal Python agent on stdin/stdout:
 

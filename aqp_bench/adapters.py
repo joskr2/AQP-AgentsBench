@@ -15,6 +15,7 @@ from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHand
 
 
 _STDERR_LIMIT = 64 * 1024
+_PROTOCOL_LINE_LIMIT = 1024 * 1024
 
 
 def _emit(callback, kind, agent_id='main', parent_id=None, **fields):
@@ -245,7 +246,9 @@ class CommandAdapter:
 
         def read():
             try:
-                while line := process.stdout.readline():
+                while line := process.stdout.readline(_PROTOCOL_LINE_LIMIT + 1):
+                    if len(line) > _PROTOCOL_LINE_LIMIT and not line.endswith(b'\n'):
+                        raise ValueError('Command agent protocol line exceeds 1 MiB')
                     record = json.loads(line)
                     if not isinstance(record, dict):
                         raise ValueError('Command agent protocol records must be objects')
@@ -258,11 +261,16 @@ class CommandAdapter:
         reader.start()
 
         errors = queue.Queue()
+        pending_inputs = set()
+        closing = threading.Event()
 
         def submit_input(record):
             request_id = record.get('request_id')
             if not isinstance(request_id, str) or not request_id:
                 raise RuntimeError('input_request requires a nonempty string request_id')
+            if request_id in pending_inputs:
+                return  # duplicate requests are ignored, matching Pi dialogs
+            pending_inputs.add(request_id)
             question = record.get('question') or 'Agent requests input'
             metadata = record.get('metadata')
             metadata = dict(metadata) if isinstance(metadata, dict) else {}
@@ -270,12 +278,15 @@ class CommandAdapter:
             def answer():
                 try:
                     reply = ask(question, metadata)
-                    # Resume accounting before writing: the agent cannot finish
-                    # before it receives the reply.
-                    _emit(on_event, 'agent_resume')
+                    if closing.is_set():
+                        return
+                    # Resume accounting only once the reply is actually written.
                     send({'type':'answer', 'request_id':request_id, 'value':reply})
+                    if not closing.is_set():
+                        _emit(on_event, 'agent_resume')
                 except Exception as error:
-                    errors.put(error)
+                    if not closing.is_set():
+                        errors.put(error)
             threading.Thread(target=answer, daemon=True).start()
 
         ended = False
@@ -296,7 +307,7 @@ class CommandAdapter:
                 if record is None:
                     raise process_exit_error()
                 if isinstance(record, Exception):
-                    raise RuntimeError('Invalid command agent protocol output') from record
+                    raise RuntimeError(f'Invalid command agent protocol output: {record}') from record
                 kind = record.get('type')
                 if kind == 'message':
                     _emit(on_event, 'message', text=str(record.get('text', '')))
@@ -309,17 +320,23 @@ class CommandAdapter:
                         _emit(on_event, 'agent_end', record.get('agent_id') or 'main')
                         ended = True
                 elif kind == 'done':
-                    if record.get('stop_reason') == 'error':
+                    reason = record.get('stop_reason')
+                    if reason == 'error':
                         raise RuntimeError(record.get('error') or 'Command agent reported an error')
+                    if reason != 'end_turn':
+                        raise RuntimeError(
+                            f'Command agent finished with unexpected stop_reason: {reason!r}')
                     break
                 # Unknown record types are ignored for forward compatibility.
             if stop.is_set():
+                closing.set()
                 try:
                     send({'type':'stop'})
                 except Exception:
                     pass  # the agent may already be gone; the container stop below owns it
                 self.runtime.stop(self.container)
         finally:
+            closing.set()
             _finish_process(process)
             reader.join(timeout=2)
             stderr_reader.join(timeout=2)

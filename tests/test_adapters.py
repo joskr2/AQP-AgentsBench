@@ -329,3 +329,47 @@ def test_manifest_accepts_command_kind_and_requires_command(tmp_path):
                   {"id": "my", "kind": "command", "command": []}):
         with pytest.raises(ValueError):
             load_campaign(manifest([agent]))
+
+
+@pytest.mark.parametrize("reason", ["aborted", "max_tokens", "length", "cancelled", None])
+def test_command_agent_rejects_non_success_stop_reason(reason):
+    payload = {"type": "done"} if reason is None else {"type": "done", "stop_reason": reason}
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps(%s), flush=True)
+sys.stdin.buffer.read()
+''' % json.dumps(payload)
+    with pytest.raises(RuntimeError, match="stop_reason"):
+        command_run(program)
+
+
+def test_command_agent_ignores_duplicate_input_requests():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps({"type":"input_request","request_id":"req-1","question":"Continue?"}), flush=True)
+print(json.dumps({"type":"input_request","request_id":"req-1","question":"Continue?"}), flush=True)
+reply = json.loads(sys.stdin.buffer.readline())
+assert reply["request_id"] == "req-1" and reply["value"] is True, reply
+print(json.dumps({"type":"done","stop_reason":"end_turn"}), flush=True)
+sys.stdin.buffer.read()
+'''
+    asked = []
+
+    def ask(question, metadata):
+        asked.append(question)
+        return True
+
+    _, _, seen = command_run(program, ask=ask)
+    assert asked == ["Continue?"]
+    assert [event['type'] for event in seen].count('agent_wait') == 1
+
+
+def test_command_agent_rejects_oversized_protocol_line():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+sys.stdout.buffer.write(b"x" * (1024 * 1024 + 64))
+sys.stdout.buffer.flush()
+sys.stdin.buffer.read()
+'''
+    with pytest.raises(RuntimeError, match="1 MiB"):
+        command_run(program)

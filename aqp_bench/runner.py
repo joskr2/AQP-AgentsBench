@@ -73,8 +73,10 @@ def _redact(value, secrets):
 def run_campaign(campaign, store, *, api_key, runtime_factory=DockerRuntime,
                  gateway_factory=Gateway, adapter_factory=None, notify=print, cancel=None):
     # The Docker runtime only supports local Linux x86_64 daemons. Injected
-    # runtimes (offline demo, test fixtures) carry their own platform contract.
-    if runtime_factory is DockerRuntime and (
+    # runtimes (offline demo, test fixtures) carry their own platform contract;
+    # subclasses of DockerRuntime keep the real constraint.
+    docker_runtime = isinstance(runtime_factory, type) and issubclass(runtime_factory, DockerRuntime)
+    if docker_runtime and (
             platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64")):
         raise ValueError("The initial release requires Linux x86_64")
     if not isinstance(api_key, str) or not api_key:
