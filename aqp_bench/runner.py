@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import harness
-from .adapters import OpenCodeAdapter, PiAdapter
+from .adapters import CommandAdapter, OpenCodeAdapter, PiAdapter
 from .artifacts import inventory, write_diff
 from .docker import DockerRuntime
 from .evaluation import evaluate
@@ -72,7 +72,12 @@ def _redact(value, secrets):
 
 def run_campaign(campaign, store, *, api_key, runtime_factory=DockerRuntime,
                  gateway_factory=Gateway, adapter_factory=None, notify=print, cancel=None):
-    if platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64"):
+    # The Docker runtime only supports local Linux x86_64 daemons. Injected
+    # runtimes (offline demo, test fixtures) carry their own platform contract;
+    # subclasses of DockerRuntime keep the real constraint.
+    docker_runtime = isinstance(runtime_factory, type) and issubclass(runtime_factory, DockerRuntime)
+    if docker_runtime and (
+            platform.system() != "Linux" or platform.machine().lower() not in ("x86_64", "amd64")):
         raise ValueError("The initial release requires Linux x86_64")
     if not isinstance(api_key, str) or not api_key:
         raise ValueError("Supply an explicit OpenRouter API key via the selected environment variable")
@@ -221,7 +226,8 @@ def _run(spec, campaign_id, store, api_key, runtime_factory, gateway_factory, ad
                     stop.set()
                 result["status"] = "running"
                 save()
-                adapter_type = adapter_factory or {"pi": PiAdapter, "opencode": OpenCodeAdapter}[spec["agent"]["kind"]]
+                adapter_type = adapter_factory or {"pi": PiAdapter, "opencode": OpenCodeAdapter,
+                                                   "command": CommandAdapter}[spec["agent"]["kind"]]
                 try:
                     if not stop.is_set():
                         adapter_type(runtime, container, spec["agent"].get("command")).run(

@@ -1,6 +1,7 @@
 # Agent and container integration
 
-The adapters implement Pi JSONL RPC and OpenCode v1.2 HTTP APIs. Deterministic
+The adapters implement Pi JSONL RPC, OpenCode v1.2 HTTP APIs, and the generic
+`aqp-agent-v1` JSONL protocol for arbitrary command harnesses. Deterministic
 fixtures prove the local protocol behavior; **a real Docker/agent/model run has
 not been verified**. The offline demo is not agent-compatibility evidence.
 
@@ -69,10 +70,12 @@ configuration automatically. Review arbitrary selected text/code yourself:
 secret-pattern checks are not a universal secret detector.
 
 `harness.configure(home, kind, model, gateway_url, token)` preserves unrelated
-settings, instructions, hooks, skills, and plugins. It adds the `aqp` provider and
-returns the **only** explicit environment the caller should pass to the container.
-The local gateway token is an environment reference, never literal configuration;
-the upstream OpenRouter key must never enter the container. Conflicting providers,
+settings, instructions, hooks, skills, and plugins. For Pi/OpenCode it adds the
+`aqp` provider and returns the **only** explicit environment the caller should pass
+to the container; a `command` harness instead receives only the base environment
+and owns its model routing. The local gateway token is an environment reference,
+never literal configuration; the upstream OpenRouter key must never enter the
+container. Conflicting providers,
 model defaults, credential stores, and ambiguous JSONC are rejected instead of
 silently discarded. Pi gets gateway model defaults; OpenCode also gets runtime
 inline overrides. [Pi model configuration](https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/docs/models.md)
@@ -117,6 +120,86 @@ Human callbacks run separately from readers; stop remains observable while a
 callback waits. The CLI owns counting submitted replies. Cancellation stops the
 container, not just the local `docker exec` client. A blocked host callback cannot
 be forcibly killed and must respect the enclosing CLI's cancellation lifecycle.
+
+## Generic `command` adapter: `aqp-agent-v1`
+
+Any executable harness, including one written in another language such as Rust,
+can be benchmarked without Pi/OpenCode coupling. The manifest agent
+`{"id": "my", "kind": "command", "command": ["my-agent", "--flag"]}` starts that
+argv inside the task container; `command` is mandatory and must be a nonempty argv
+array for this kind. Pi and OpenCode keep it optional.
+
+Transport: one UTF-8 JSON object per line, each terminated by `\n`, over the
+process stdin/stdout. stderr is diagnostics only, not protocol; the adapter
+retains at most 64 KiB and includes it in startup/EOF errors.
+
+Harness → agent records:
+
+| Record | Meaning |
+|---|---|
+| `{"type":"prompt","id":"<uuid>","model":"provider/model","prompt":"<text>"}` | One run's task prompt and configured model |
+| `{"type":"answer","request_id":"<id>","value":<JSON>}` | Human reply to a previous `input_request`; `value` is the reply as JSON |
+| `{"type":"stop"}` | Best-effort cancellation notice; the runtime also stops the container |
+
+Agent → harness records:
+
+| Record | Meaning |
+|---|---|
+| `{"type":"agent_start","agent_id":"main"}` | Optional lifecycle start; the adapter emits a normalized `agent_start` if absent |
+| `{"type":"agent_end","agent_id":"main"}` | Optional lifecycle end; the adapter emits a normalized `agent_end` if absent |
+| `{"type":"message","text":"..."}` | Text progress |
+| `{"type":"input_request","request_id":"<id>","question":"...","metadata":{...}}` | Requests a human reply; the adapter calls `ask(question, metadata)` and writes the `answer` record with the returned value |
+| `{"type":"done","stop_reason":"end_turn"}` | Terminal success; any other `stop_reason` is a failure |
+| `{"type":"done","stop_reason":"error","error":"..."}` | Terminal failure; the adapter raises `RuntimeError` with that message |
+
+Rules:
+
+- Accepting the prompt is not completion. The adapter waits for `done`; stdout
+  EOF before `done` is an error that reports the exit code and bounded stderr.
+- Only `stop_reason: "end_turn"` is success. `error`, `aborted`, `max_tokens`, `length`,
+  `cancelled`, or a missing reason fail the run with the reported detail.
+- Protocol lines are capped at 1 MiB; duplicates of one `request_id` are ignored; unknown record
+  types are ignored so future extensions stay compatible.
+- Human callbacks run on a separate thread: a slow or failing `ask` never blocks
+  the stdout reader. Each `input_request` is surrounded by normalized
+  `agent_wait`/`agent_resume` events; reply errors surface as a `RuntimeError`.
+- If the run is stopped, the adapter writes a best-effort `{"type":"stop"}` record
+  and calls `runtime.stop(container)`.
+- `command` emits no Pi/OpenCode provider configuration. The harness receives the
+  staged `HOME` and the base environment: `AQP_GATEWAY_TOKEN` and
+  `AQP_GATEWAY_URL` (container-facing base URL ending in `/v1`). Point an
+  OpenAI-compatible provider at that URL and use the `model` from the `prompt`
+  record to route every request through the benchmark gateway; otherwise model
+  routing and gateway coverage are the harness's own responsibility and must not
+  be claimed.
+- Treat the task workspace as untrusted input: do not read the gateway endpoint
+  or credentials from repository files, and keep harness state outside the
+  workspace so it cannot pollute the evaluated diff.
+- `answer.value` is JSON, but the runner validates it against the question
+  metadata before returning it: confirmations become booleans, permission
+  replies stay strings, and OpenCode question groups need `string[][]`.
+
+Minimal Python agent on stdin/stdout:
+
+```python
+#!/usr/bin/env python3
+import json, sys
+
+def send(record):
+    sys.stdout.write(json.dumps(record) + "\n")
+    sys.stdout.flush()
+
+prompt = json.loads(sys.stdin.readline())
+assert prompt["type"] == "prompt"
+send({"type": "agent_start", "agent_id": "main"})
+send({"type": "message", "text": "working on: " + prompt["prompt"]})
+send({"type": "input_request", "request_id": "q-1",
+      "question": "Continue?", "metadata": {"method": "confirm"}})
+reply = json.loads(sys.stdin.readline())
+assert reply == {"type": "answer", "request_id": "q-1", "value": True}
+send({"type": "message", "text": "approved"})
+send({"type": "done", "stop_reason": "end_turn"})
+```
 
 ## Attribution and measurement limits
 

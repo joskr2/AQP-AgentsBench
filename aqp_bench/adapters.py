@@ -8,12 +8,14 @@ import secrets
 import subprocess
 import threading
 import time
+import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 
 
 _STDERR_LIMIT = 64 * 1024
+_PROTOCOL_LINE_LIMIT = 1024 * 1024
 
 
 def _emit(callback, kind, agent_id='main', parent_id=None, **fields):
@@ -185,6 +187,161 @@ class PiAdapter:
             reader.join(timeout=2)
             stderr_reader.join(timeout=2)
             _emit(on_event, 'agent_end')
+
+
+class CommandAdapter:
+    """Generic aqp-agent-v1 JSONL adapter for arbitrary command harnesses.
+
+    One UTF-8 JSON object per LF-terminated line travels over stdin/stdout; stderr
+    is bounded diagnostics. Prompt acceptance is not completion: only ``done`` is
+    terminal, and EOF before ``done`` fails with the exit code and stderr tail.
+    """
+    def __init__(self, runtime, container, command=None):
+        self.runtime, self.container = runtime, container
+        self.command = list(command or [])
+
+    def run(self, prompt, model, on_event, ask, stop):
+        if not self.command:
+            raise ValueError('Command agent requires a nonempty argv command')
+        process = self.runtime.spawn(self.container, self.command, capture_stderr=True)
+        records = queue.Queue()
+        write_lock = threading.Lock()
+        stderr_bytes = bytearray()
+        stderr_truncated = threading.Event()
+
+        def read_stderr():
+            stream = getattr(process, 'stderr', None)
+            if stream is None:
+                return
+            while chunk := stream.read(4096):
+                room = _STDERR_LIMIT - len(stderr_bytes)
+                if room > 0:
+                    stderr_bytes.extend(chunk[:room])
+                if len(chunk) > room:
+                    stderr_truncated.set()
+
+        stderr_reader = threading.Thread(target=read_stderr, daemon=True)
+        stderr_reader.start()
+
+        def process_exit_error():
+            try:
+                process.wait(timeout=1)
+            except (subprocess.TimeoutExpired, AttributeError):
+                pass
+            stderr_reader.join(timeout=1)
+            exit_code = process.poll()
+            code = 'unknown' if exit_code is None else str(exit_code)
+            detail = bytes(stderr_bytes).decode('utf-8', errors='replace').strip()
+            message = f'Command agent stdout closed before done (exit code {code}).'
+            if detail:
+                message += f' Command stderr: {detail}'
+            if stderr_truncated.is_set():
+                message += ' [stderr truncated at 65536 bytes]'
+            return RuntimeError(message)
+
+        def send(record):
+            with write_lock:
+                process.stdin.write(json.dumps(record).encode('utf-8') + b'\n')
+                process.stdin.flush()
+
+        def read():
+            try:
+                while line := process.stdout.readline(_PROTOCOL_LINE_LIMIT + 1):
+                    if len(line) > _PROTOCOL_LINE_LIMIT and not line.endswith(b'\n'):
+                        raise ValueError('Command agent protocol line exceeds 1 MiB')
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise ValueError('Command agent protocol records must be objects')
+                    records.put(record)
+            except Exception as error:
+                records.put(error)
+            finally:
+                records.put(None)
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+
+        errors = queue.Queue()
+        pending_inputs = set()
+        closing = threading.Event()
+
+        def submit_input(record):
+            request_id = record.get('request_id')
+            if not isinstance(request_id, str) or not request_id:
+                raise RuntimeError('input_request requires a nonempty string request_id')
+            if request_id in pending_inputs:
+                return  # duplicate requests are ignored, matching Pi dialogs
+            pending_inputs.add(request_id)
+            question = record.get('question') or 'Agent requests input'
+            metadata = record.get('metadata')
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            _emit(on_event, 'agent_wait')
+            def answer():
+                try:
+                    reply = ask(question, metadata)
+                    if closing.is_set():
+                        return
+                    # Resume accounting only once the reply is actually written.
+                    send({'type':'answer', 'request_id':request_id, 'value':reply})
+                    if not closing.is_set():
+                        _emit(on_event, 'agent_resume')
+                except Exception as error:
+                    if not closing.is_set():
+                        errors.put(error)
+            threading.Thread(target=answer, daemon=True).start()
+
+        ended = False
+        _emit(on_event, 'agent_start')
+        try:
+            send({'type':'prompt', 'id':str(uuid.uuid4()), 'model':model, 'prompt':prompt})
+            while not stop.is_set():
+                try:
+                    error = errors.get_nowait()
+                except queue.Empty:
+                    error = None
+                if error is not None:
+                    raise RuntimeError('Human reply could not be delivered') from error
+                try:
+                    record = records.get(timeout=.05)
+                except queue.Empty:
+                    continue
+                if record is None:
+                    raise process_exit_error()
+                if isinstance(record, Exception):
+                    raise RuntimeError(f'Invalid command agent protocol output: {record}') from record
+                kind = record.get('type')
+                if kind == 'message':
+                    _emit(on_event, 'message', text=str(record.get('text', '')))
+                elif kind == 'input_request':
+                    submit_input(record)
+                elif kind == 'agent_start':
+                    pass  # normalized agent_start is emitted once at startup
+                elif kind == 'agent_end':
+                    if not ended:
+                        _emit(on_event, 'agent_end', record.get('agent_id') or 'main')
+                        ended = True
+                elif kind == 'done':
+                    reason = record.get('stop_reason')
+                    if reason == 'error':
+                        raise RuntimeError(record.get('error') or 'Command agent reported an error')
+                    if reason != 'end_turn':
+                        raise RuntimeError(
+                            f'Command agent finished with unexpected stop_reason: {reason!r}')
+                    break
+                # Unknown record types are ignored for forward compatibility.
+            if stop.is_set():
+                closing.set()
+                try:
+                    send({'type':'stop'})
+                except Exception:
+                    pass  # the agent may already be gone; the container stop below owns it
+                self.runtime.stop(self.container)
+        finally:
+            closing.set()
+            _finish_process(process)
+            reader.join(timeout=2)
+            stderr_reader.join(timeout=2)
+            if not ended:
+                _emit(on_event, 'agent_end')
 
 
 class _NoRedirect(HTTPRedirectHandler):

@@ -1,8 +1,10 @@
 # AQP-AgentsBench
 
+[![tests](https://github.com/joskr2/AQP-AgentsBench/actions/workflows/tests.yml/badge.svg)](https://github.com/joskr2/AQP-AgentsBench/actions/workflows/tests.yml)
+
 Local, outcome-based coding-agent benchmarks for **Linux x86_64**. Run task matrices across Pi, OpenCode, models, harness configurations, and repeated trials. Keep results and workspaces on your machine.
 
-**Status:** initial implementation. Deterministic tests and an offline simulation exercise the platform; real Docker/agent/OpenRouter and Gentle-ai compatibility still need a user-authorized smoke test. Subagent measurements are limited to identities exposed by the agent/harness—missing attribution is never fabricated.
+**Status:** initial implementation. Deterministic tests and an offline simulation exercise the platform; real Docker/agent/OpenRouter and Gentle-ai compatibility still need a user-authorized smoke test. Subagent measurements are limited to identities exposed by the agent/harness—missing attribution is never fabricated. Live campaigns still require a Linux x86_64 Docker host; the offline `demo` and the deterministic test suite run on other hosts too.
 
 ## Quick start: no model key, Docker, or paid calls
 
@@ -38,6 +40,10 @@ For an installed CLI, use `python -m pip install -e '.[dev]'`, then replace `pyt
 
 5. Monitor with a second terminal running `dashboard` against the same artifact directory. The dashboard polls live state; it cannot start, stop, or answer runs.
 
+## Benchmark any harness
+
+Besides Pi and OpenCode, a manifest agent can be any executable harness that speaks the generic `aqp-agent-v1` JSONL protocol: `{"id": "my", "kind": "command", "command": ["my-agent"]}`. The adapter sends the task prompt and model on stdin, streams progress messages back, relays human input requests through the CLI, and treats only `done` as completion. The harness receives `AQP_GATEWAY_TOKEN` and `AQP_GATEWAY_URL`, so an OpenAI-compatible client can route every request through the benchmark gateway and keep per-attempt cost accounting. See [agent integration](docs/agents.md#generic-command-adapter-aqp-agent-v1).
+
 ## Human input and stopping
 
 Keep the campaign terminal running. In another terminal using the same `--artifacts` directory:
@@ -72,7 +78,7 @@ aqp_bench/
   metrics.py, scoring.py          timing, accounting, weighted evaluation
   store.py, artifacts.py          local persistence and safe change capture
   docker.py, harness.py           isolated runtime and selected configuration
-  adapters.py                    Pi RPC and OpenCode HTTP/SSE
+  adapters.py                    Pi RPC, OpenCode HTTP/SSE, and aqp-agent-v1 JSONL
   gateway.py                     authenticated OpenRouter forwarding
   evaluation.py, runner.py        separate checks and bounded campaigns
   cli.py, dashboard.py            CLI controls and live read-only monitoring

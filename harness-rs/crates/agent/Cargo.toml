@@ -1,0 +1,21 @@
+[package]
+name = "dshrs-agent"
+description = "Turn/step agent loop: log-derived history, streaming, tool execution, cancellation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dshrs-kernel.workspace = true
+dshrs-llm.workspace = true
+dshrs-session.workspace = true
+dshrs-tools.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

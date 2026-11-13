@@ -1,0 +1,25 @@
+[package]
+name = "dshrs-cli"
+description = "harn: REPL and one-shot CLI for the Rust coding-agent skeleton"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "harn"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+dshrs-agent.workspace = true
+dshrs-kernel.workspace = true
+dshrs-llm.workspace = true
+dshrs-session.workspace = true
+dshrs-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true

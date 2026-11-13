@@ -4,6 +4,9 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
+from aqp_bench.docker import DockerRuntime
 from aqp_bench.runner import coerce_answer, run_campaign
 from aqp_bench.store import Store
 
@@ -249,3 +252,32 @@ def test_stop_during_setup_still_evaluates(tmp_path):
                           gateway_factory=Gateway, adapter_factory=Adapter, notify=lambda _: None)[0]
     assert result["status"] == "incomplete"
     assert result["evaluation"]["earned_score"] == 0
+
+
+@pytest.mark.parametrize(("system", "machine"), [("Darwin", "arm64"), ("Linux", "aarch64")])
+def test_default_docker_runtime_rejects_non_linux_x86_64(tmp_path, monkeypatch, system, machine):
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("platform.machine", lambda: machine)
+    with pytest.raises(ValueError, match="Linux x86_64"):
+        run_campaign(spec(tmp_path), Store(tmp_path / "a"), api_key="key")
+    assert not (tmp_path / "a" / "runs").exists()
+
+
+def test_injected_runtime_bypasses_linux_platform_gate(tmp_path, monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    result = run_campaign(spec(tmp_path), Store(tmp_path / "a"), api_key="key", runtime_factory=Runtime,
+                          gateway_factory=Gateway, adapter_factory=Adapter, notify=lambda _: None)[0]
+    assert result["status"] == "completed"
+    assert result["evaluation"]["earned_score"] == 5
+
+
+def test_docker_runtime_subclass_still_requires_linux_x86_64(tmp_path, monkeypatch):
+    monkeypatch.setattr("platform.system", lambda: "Darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+    class LocalDocker(DockerRuntime):
+        pass
+
+    with pytest.raises(ValueError, match="Linux x86_64"):
+        run_campaign(spec(tmp_path), Store(tmp_path / "a"), api_key="key", runtime_factory=LocalDocker)

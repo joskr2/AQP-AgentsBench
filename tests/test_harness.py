@@ -77,3 +77,11 @@ def test_unsupported_harness_does_not_write_configuration(tmp_path):
     with pytest.raises(ValueError, match='Unsupported'):
         configure(tmp_path/'home','other','org/model','http://gateway/v1','local')
     assert not (tmp_path/'home').exists()
+
+
+def test_configure_command_leaves_model_routing_to_the_harness(tmp_path):
+    home = tmp_path / 'home'
+    env = configure(home, 'command', 'org/model', 'http://gateway/v1', 'local')
+    assert env == {'HOME': '/home/agent', 'AQP_GATEWAY_TOKEN': 'local',
+                   'AQP_GATEWAY_URL': 'http://gateway/v1'}
+    assert not home.exists()
