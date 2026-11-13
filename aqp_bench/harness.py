@@ -92,6 +92,12 @@ def configure(home: Path, kind: str, model: str, gateway_url: str, token: str) -
         generated = {'provider':{'aqp':provider}, 'enabled_providers':['aqp'], 'model':f'aqp/{model}', 'small_model':f'aqp/{model}'}
         env.update({'XDG_CONFIG_HOME':'/home/agent/.config', 'XDG_DATA_HOME':'/home/agent/.local/share',
                     'OPENCODE_CONFIG':'/home/agent/.config/opencode/opencode.json', 'OPENCODE_DISABLE_AUTOUPDATE':'true'})
+    elif kind == 'command':
+        # A generic command harness owns its model routing; generating Pi/OpenCode
+        # provider files would be wrong. It still needs the container-facing
+        # gateway endpoint and capability to account provider attempts.
+        env['AQP_GATEWAY_URL'] = gateway_url
+        return env
     else:
         raise ValueError(f'Unsupported agent kind: {kind}')
     # No JSONC parser or implicit credential import: reject ambiguous alternatives.
@@ -99,8 +105,12 @@ def configure(home: Path, kind: str, model: str, gateway_url: str, token: str) -
         if conflict.exists():
             raise ValueError('Remove incompatible credential/JSONC configuration from selected harness')
     for ancestor in (path, *path.parents):
+        # Host layout above the selected home (for example /var on macOS) is not
+        # part of the untrusted destination; home and everything below it is.
         if ancestor.is_symlink():
             raise ValueError('Configuration destination cannot contain symlinks')
+        if ancestor == home:
+            break
     existing = json.loads(path.read_text()) if path.exists() else {}
     _validate_models(existing, model, kind)
     key = 'providers' if kind == 'pi' else 'provider'
@@ -150,6 +160,10 @@ def validate_workspace(workspace: Path, kind: str, model: str) -> None:
 
     This is configuration validation, NOT a sandbox for executable extensions.
     """
+    if kind == 'command':
+        # No known project-level routing format exists for an arbitrary harness;
+        # validate what is knowable instead of inventing Pi/OpenCode rules.
+        return
     root = Path(workspace)
     candidates = ([root/'opencode.json', root/'opencode.jsonc'] if kind == 'opencode'
                   else [root/'.pi/settings.json', root/'.pi/models.json'])

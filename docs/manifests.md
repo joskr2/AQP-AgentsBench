@@ -27,6 +27,15 @@ Version 1 campaigns are JSON, resolved relative to the manifest file. Validation
 }
 ```
 
+`agents[].kind` is `pi`, `opencode`, or `command`. Pi and OpenCode optionally accept
+an argv `command` override; `command` agents require it because the adapter has no
+built-in executable. A generic harness uses the `aqp-agent-v1` protocol documented
+in [agent integration](agents.md):
+
+```json
+{"id": "my", "kind": "command", "command": ["my-agent"]}
+```
+
 Each `evaluation.tests` entry represents **one independently scored unit test**. Use a specific pytest node selector or npm test selector, not an entire suite assigned one score. Exit zero means passed; other exits mean failed. A passing unit earns its assigned score. Skipped/not-run tests do not earn points; infrastructure faults are recorded separately. The total score denominator is the sum of all defined test scores, not only executed tests.
 
 Modification tasks add `repository: {"source": "../repo", "revision": "HEAD"}`. Local revision names are resolved to a commit before campaign execution; HTTP(S) Git URLs require a full commit hash. Local repositories must already have a commit. Dirty files trigger a pre-start warning and are excluded. The source repository is never cleaned or auto-committed. Remote authentication is not inherited; authenticated Git transport is outside this initial manifest.

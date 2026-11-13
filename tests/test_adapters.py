@@ -1,9 +1,11 @@
 import io
 import json
+import subprocess
+import sys
 import threading
 from unittest.mock import Mock
 import pytest
-from aqp_bench.adapters import PiAdapter, OpenCodeAdapter
+from aqp_bench.adapters import CommandAdapter, PiAdapter, OpenCodeAdapter
 
 
 class Process:
@@ -192,3 +194,138 @@ def test_opencode_http_transport_auth_and_sse():
         server.shutdown()
         server.server_close()
         serving.join()
+
+
+def command_run(program, ask=lambda *args: True, stop=None):
+    import subprocess
+    import sys
+    process = subprocess.Popen([sys.executable, '-u', '-c', program], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    runtime = Mock()
+    runtime.spawn.return_value = process
+    seen, stop = [], stop or threading.Event()
+    CommandAdapter(runtime, 'cid', [sys.executable, '-u', '-c', program]).run(
+        'hello', 'org/model', seen.append, ask, stop)
+    return runtime, process, seen
+
+
+def test_command_agent_messages_then_done_completes():
+    program = '''import sys, json
+prompt = json.loads(sys.stdin.buffer.readline())
+assert prompt["type"] == "prompt" and prompt["id"] and prompt["prompt"] == "hello"
+assert prompt["model"] == "org/model"
+print(json.dumps({"type":"message","text":"working"}), flush=True)
+print(json.dumps({"type":"message","text":"line\\u2028two"}), flush=True)
+print(json.dumps({"type":"done","stop_reason":"end_turn"}), flush=True)
+sys.stdin.buffer.read()
+'''
+    runtime, process, seen = command_run(program)
+    assert [e['type'] for e in seen] == ['agent_start', 'message', 'message', 'agent_end']
+    assert seen[1]['text'] == 'working' and seen[2]['text'] == 'line\u2028two'
+    assert runtime.spawn.call_args.args[0] == 'cid'
+    assert runtime.spawn.call_args.kwargs['capture_stderr'] is True
+    assert process.poll() is not None
+
+
+def test_command_agent_input_request_receives_answer():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps({"type":"input_request","request_id":"req-1","question":"Continue?",
+                  "metadata":{"method":"confirm","options":["yes","no"]}}), flush=True)
+reply = json.loads(sys.stdin.buffer.readline())
+assert reply == {"type":"answer","request_id":"req-1","value":True}, reply
+print(json.dumps({"type":"done","stop_reason":"end_turn"}), flush=True)
+sys.stdin.buffer.read()
+'''
+    asked = []
+
+    def ask(question, metadata):
+        asked.append((question, metadata))
+        return True
+
+    _, process, seen = command_run(program, ask=ask)
+    assert asked == [('Continue?', {'method': 'confirm', 'options': ['yes', 'no']})]
+    assert [e['type'] for e in seen] == ['agent_start', 'agent_wait', 'agent_resume', 'agent_end']
+    assert process.poll() is not None
+
+
+def test_command_agent_eof_without_done_reports_exit_code_and_stderr():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps({"type":"message","text":"accepted"}), flush=True)
+print("bootstrap failed: missing model", file=sys.stderr, flush=True)
+sys.exit(17)
+'''
+    with pytest.raises(RuntimeError, match=r'before done.*exit code 17.*bootstrap failed'):
+        command_run(program)
+
+
+def test_command_agent_done_error_is_runtime_error():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps({"type":"done","stop_reason":"error","error":"model unavailable"}), flush=True)
+sys.stdin.buffer.read()
+'''
+    with pytest.raises(RuntimeError, match='model unavailable'):
+        command_run(program)
+
+
+def test_command_agent_stop_during_human_wait_stops_container():
+    program = '''import sys, json
+json.loads(sys.stdin.buffer.readline())
+print(json.dumps({"type":"input_request","request_id":"q","question":"Value?","metadata":{}}), flush=True)
+sys.stdin.buffer.read()
+'''
+    entered, release, stop = threading.Event(), threading.Event(), threading.Event()
+
+    def ask(question, metadata):
+        entered.set()
+        release.wait(2)
+        return 'answer'
+
+    process = subprocess.Popen([sys.executable, '-u', '-c', program], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    runtime = Mock()
+    runtime.spawn.return_value = process
+    seen, errors = [], []
+
+    def run():
+        try:
+            CommandAdapter(runtime, 'cid', [sys.executable, '-u', '-c', program]).run(
+                'hello', 'org/model', seen.append, ask, stop)
+        except Exception as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert entered.wait(2)
+    stop.set()
+    worker.join(3)
+    release.set()
+    assert not worker.is_alive() and not errors
+    runtime.stop.assert_called_once_with('cid')
+    assert 'agent_wait' in [e['type'] for e in seen]
+    assert seen[-1]['type'] == 'agent_end'
+
+
+def test_manifest_accepts_command_kind_and_requires_command(tmp_path):
+    from aqp_bench.manifest import load_campaign
+
+    def manifest(agents):
+        data = {"version": 1,
+                "tasks": [{"id": "task", "prompt": "Do it", "image": "image",
+                           "evaluation": {"tests": [{"id": "ok", "score": 1,
+                                                     "command": ["python", "-c", "pass"]}]}}],
+                "agents": agents, "models": ["vendor/model"]}
+        path = tmp_path / "campaign.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    loaded = load_campaign(manifest([{"id": "my", "kind": "command",
+                                      "command": ["my-agent", "--flag"]}]))
+    assert loaded["agents"][0]["command"] == ["my-agent", "--flag"]
+    assert load_campaign(manifest([{"id": "pi", "kind": "pi"}]))["agents"][0]["kind"] == "pi"
+    for agent in ({"id": "my", "kind": "command"},
+                  {"id": "my", "kind": "command", "command": []}):
+        with pytest.raises(ValueError):
+            load_campaign(manifest([agent]))

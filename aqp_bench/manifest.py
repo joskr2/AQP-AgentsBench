@@ -105,8 +105,10 @@ def load_campaign(path):
         _items(data[name], name)
     for agent in data["agents"]:
         _keys(agent, {"id", "kind", "command"}, {"id", "kind"})
-        if agent["kind"] not in ("pi", "opencode"):
-            raise ValueError("Supported live agents: pi, opencode")
+        if agent["kind"] not in ("pi", "opencode", "command"):
+            raise ValueError("Supported live agents: pi, opencode, command")
+        if agent["kind"] == "command" and "command" not in agent:
+            raise ValueError("command agents require a nonempty argv 'command'")
         if "command" in agent:
             _command(agent["command"])
     for harness in data["harnesses"]:
