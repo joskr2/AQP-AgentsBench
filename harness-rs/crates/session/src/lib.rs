@@ -264,7 +264,10 @@ mod tests {
         assert_eq!(messages[1].content, "on it");
         assert_eq!(messages[2].role, Role::Assistant);
         assert_eq!(messages[2].tool_calls[0].name, "read");
-        assert_eq!(messages[2].tool_calls[0].arguments, json!({ "path": "a.txt" }));
+        assert_eq!(
+            messages[2].tool_calls[0].arguments,
+            json!({ "path": "a.txt" })
+        );
         assert_eq!(messages[3].role, Role::Tool);
         assert_eq!(messages[3].tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(messages[3].content, "hello");

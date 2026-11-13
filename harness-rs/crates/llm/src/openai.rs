@@ -232,7 +232,11 @@ async fn parse_sse(response: reqwest::Response, sender: mpsc::Sender<Result<LlmD
             name: pending.name,
             arguments,
         };
-        if sender.send(Ok(LlmDelta::ToolCall(tool_call))).await.is_err() {
+        if sender
+            .send(Ok(LlmDelta::ToolCall(tool_call)))
+            .await
+            .is_err()
+        {
             return;
         }
     }
@@ -349,7 +353,10 @@ mod tests {
         assert_eq!(body["model"], "test-model");
         assert_eq!(body["stream"], true);
         assert_eq!(body["messages"][0]["role"], "assistant");
-        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            "read"
+        );
         assert_eq!(body["messages"][1]["role"], "tool");
         assert_eq!(body["messages"][1]["tool_call_id"], "call-1");
         assert_eq!(body["tools"][0]["function"]["name"], "read");

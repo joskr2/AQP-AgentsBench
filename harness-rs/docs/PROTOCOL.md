@@ -3,9 +3,13 @@
 Especificación del protocolo de línea JSON (JSONL) que permitirá medir este harness con el
 benchmark Python del repositorio (`aqp_bench/`) como un **proceso externo**.
 
-> **Estado de implementación: NO IMPLEMENTADO.** Este documento es solo la especificación para una
-> integración futura. El binario `harn` actual no habla este protocolo: usa un REPL por stdin y
-> `--once`. Ver el roadmap del [README](../README.md).
+> **Estado: implementado en `harn --bench-protocol`** (una campaña del benchmark = un turno).
+> El binario lee el `prompt`, ejecuta el turno y emite `agent_start`, un `message` con el texto
+> completo del turno, `agent_end` y el `done` terminal; un `stop` cancela el turno en curso.
+> Limitaciones de la fase 1: las tools se ejecutan sin aprobación, así que **todavía no se emiten
+> `input_request`**, y los `answer` recibidos se aceptan pero se ignoran. `message` se emite una
+> vez por turno, no por token. Verificado contra un SSE local (turno feliz y cancelación), no
+> contra un proveedor real ni Docker. Integración pendiente: campaña real del benchmark.
 
 ## Especificación
 

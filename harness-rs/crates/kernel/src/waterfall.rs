@@ -112,32 +112,36 @@ mod tests {
         let mut chain = Waterfall::<HarnessEvent>::new();
 
         let first = order.clone();
-        chain.push(move |event, next| -> BoxFuture<'static, Result<HarnessEvent>> {
-            let order = first.clone();
-            Box::pin(async move {
-                order.lock().unwrap().push("first-before");
-                let event = next.run(event).await?;
-                order.lock().unwrap().push("first-after");
-                Ok(event)
-            })
-        });
+        chain.push(
+            move |event, next| -> BoxFuture<'static, Result<HarnessEvent>> {
+                let order = first.clone();
+                Box::pin(async move {
+                    order.lock().unwrap().push("first-before");
+                    let event = next.run(event).await?;
+                    order.lock().unwrap().push("first-after");
+                    Ok(event)
+                })
+            },
+        );
 
         let second = order.clone();
-        chain.push(move |event, next| -> BoxFuture<'static, Result<HarnessEvent>> {
-            let order = second.clone();
-            Box::pin(async move {
-                order.lock().unwrap().push("second-before");
-                let event = match event {
-                    HarnessEvent::TextDelta { text } => HarnessEvent::TextDelta {
-                        text: format!("{text}!"),
-                    },
-                    other => other,
-                };
-                let event = next.run(event).await?;
-                order.lock().unwrap().push("second-after");
-                Ok(event)
-            })
-        });
+        chain.push(
+            move |event, next| -> BoxFuture<'static, Result<HarnessEvent>> {
+                let order = second.clone();
+                Box::pin(async move {
+                    order.lock().unwrap().push("second-before");
+                    let event = match event {
+                        HarnessEvent::TextDelta { text } => HarnessEvent::TextDelta {
+                            text: format!("{text}!"),
+                        },
+                        other => other,
+                    };
+                    let event = next.run(event).await?;
+                    order.lock().unwrap().push("second-after");
+                    Ok(event)
+                })
+            },
+        );
 
         let output = chain
             .run(HarnessEvent::TextDelta {
@@ -154,7 +158,12 @@ mod tests {
         );
         assert_eq!(
             *order.lock().unwrap(),
-            vec!["first-before", "second-before", "second-after", "first-after"]
+            vec![
+                "first-before",
+                "second-before",
+                "second-after",
+                "first-after"
+            ]
         );
     }
 

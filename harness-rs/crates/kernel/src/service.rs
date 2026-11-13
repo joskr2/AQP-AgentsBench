@@ -38,7 +38,11 @@ impl ServiceRegistry {
         T: Any + Send + Sync,
     {
         let services = self.services.read().ok()?;
-        services.get(&TypeId::of::<T>())?.clone().downcast::<T>().ok()
+        services
+            .get(&TypeId::of::<T>())?
+            .clone()
+            .downcast::<T>()
+            .ok()
     }
 
     pub fn contains<T>(&self) -> bool
@@ -59,7 +63,10 @@ impl ServiceRegistry {
     }
 
     pub fn len(&self) -> usize {
-        self.services.read().map(|services| services.len()).unwrap_or(0)
+        self.services
+            .read()
+            .map(|services| services.len())
+            .unwrap_or(0)
     }
 
     pub fn is_empty(&self) -> bool {

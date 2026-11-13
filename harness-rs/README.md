@@ -1,10 +1,11 @@
 # harness-rs — esqueleto de harness de agentes de código en Rust
 
-> **Estado: NO compilado ni verificado (no hay toolchain Rust en la máquina donde se generó).**
-> En el entorno de generación no existe `rustc` ni `cargo` y no se instalaron (restricción explícita).
-> El código se escribió de forma conservadora (edition 2021, versiones estables de las crates), pero
-> **ningún `cargo check`, `cargo test` ni ejecución ha ocurrido**. Trátalo como un esqueleto a validar
-> con `cargo test` antes de confiar en él.
+> **Estado: compilado y verificado en macOS aarch64 con Rust 1.100.0.**
+> `cargo check --workspace` y `cargo test --workspace` pasan (29 tests). El modo
+> `--bench-protocol` se verificó de punta a punta contra un endpoint SSE local, incluido
+> el camino feliz y la cancelación con `stop`. **No** se probó contra un proveedor real,
+> Docker ni una imagen de tarea; el comportamiento del repositorio en Linux sigue sin
+> verificarse en esta máquina.
 
 ## Propósito
 
@@ -85,6 +86,7 @@ OPENAI_API_KEY=... cargo run -p dshrs-cli -- \
 | `--once "<prompt>"` | Ejecuta un turno y termina. |
 | `--config <path>` | TOML de configuración. Default `<cwd>/harn.toml` si existe. |
 | `--max-steps <n>` | Máximo de llamadas al proveedor por turno. Default 16. |
+| `--bench-protocol` | Modo headless `aqp-agent-v1`: lee un `prompt` JSONL por stdin y emite `agent_start`/`message`/`agent_end`/`done` por stdout. Lo usa el benchmark; incompatible con `--once`. |
 
 ### Variables de entorno
 

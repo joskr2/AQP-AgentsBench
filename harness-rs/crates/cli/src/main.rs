@@ -5,6 +5,7 @@
 //! written to the session log.
 #![forbid(unsafe_code)]
 
+mod bench;
 mod config;
 
 use std::env;
@@ -68,6 +69,11 @@ struct Cli {
     /// Maximum provider calls (steps) per turn.
     #[arg(long)]
     max_steps: Option<usize>,
+
+    /// Speak the headless aqp-agent-v1 JSONL protocol on stdin/stdout instead of
+    /// the REPL or --once prompt. Used by the AQP-AgentsBench runner.
+    #[arg(long = "bench-protocol")]
+    bench_protocol: bool,
 }
 
 #[tokio::main]
@@ -103,7 +109,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "warning: environment variable {api_key_env} is not set; requests are sent without an Authorization header"
         );
     }
-    let max_steps = cli.max_steps.or(config.max_steps).unwrap_or(DEFAULT_MAX_STEPS);
+    let max_steps = cli
+        .max_steps
+        .or(config.max_steps)
+        .unwrap_or(DEFAULT_MAX_STEPS);
     let system_prompt = config
         .system_prompt
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
@@ -142,6 +151,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "harn: model={model} base_url={base_url} session={}",
         session_path.display()
     );
+
+    if cli.bench_protocol {
+        if cli.once.is_some() {
+            return Err("--bench-protocol and --once are mutually exclusive".into());
+        }
+        return bench::run(&agent).await;
+    }
 
     let result = match cli.once.as_deref() {
         Some(prompt) => run_once(&agent, prompt).await,

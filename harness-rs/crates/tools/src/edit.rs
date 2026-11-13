@@ -114,17 +114,17 @@ impl Tool for EditTool {
 
 fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), ToolError> {
     let parent = target.parent().ok_or_else(|| {
-        ToolError::Failed(format!("file has no parent directory: {}", target.display()))
+        ToolError::Failed(format!(
+            "file has no parent directory: {}",
+            target.display()
+        ))
     })?;
 
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or(0);
-    let temporary = parent.join(format!(
-        ".harn-edit-{}-{nanos}.tmp",
-        std::process::id()
-    ));
+    let temporary = parent.join(format!(".harn-edit-{}-{nanos}.tmp", std::process::id()));
 
     let write_result = (|| -> std::io::Result<()> {
         let mut file = std::fs::OpenOptions::new()
@@ -301,7 +301,12 @@ mod tests {
         let leftovers = std::fs::read_dir(workspace.root())
             .unwrap()
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".harn-edit-"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".harn-edit-")
+            })
             .count();
         assert_eq!(leftovers, 0);
     }

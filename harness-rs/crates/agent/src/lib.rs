@@ -124,11 +124,10 @@ impl AgentLoop {
                 tools: self.tool_schemas(),
             };
 
-            let stream_result: Option<Result<dshrs_llm::DeltaStream, dshrs_llm::LlmError>> =
-                tokio::select! {
-                    _ = self.cancellation.cancelled() => None,
-                    result = self.provider.stream(request) => Some(result),
-                };
+            let stream_result: Option<Result<dshrs_llm::DeltaStream, dshrs_llm::LlmError>> = tokio::select! {
+                _ = self.cancellation.cancelled() => None,
+                result = self.provider.stream(request) => Some(result),
+            };
             let Some(stream_result) = stream_result else {
                 break 'turn StopReason::Cancelled;
             };
@@ -198,11 +197,10 @@ impl AgentLoop {
                     name: call.name.clone(),
                 });
 
-                let outcome: Option<Result<String, dshrs_tools::ToolError>> =
-                    tokio::select! {
-                        _ = self.cancellation.cancelled() => None,
-                        result = self.tools.execute(&call.name, call.arguments.clone(), &self.context) => Some(result),
-                    };
+                let outcome: Option<Result<String, dshrs_tools::ToolError>> = tokio::select! {
+                    _ = self.cancellation.cancelled() => None,
+                    result = self.tools.execute(&call.name, call.arguments.clone(), &self.context) => Some(result),
+                };
                 let (ok, content) = match outcome {
                     Some(Ok(content)) => (true, content),
                     Some(Err(error)) => (false, format!("tool error: {error}")),
@@ -233,7 +231,8 @@ impl AgentLoop {
             }
         };
 
-        self.append(SessionEvent::TurnFinished { stop_reason }).await?;
+        self.append(SessionEvent::TurnFinished { stop_reason })
+            .await?;
         if stop_reason == StopReason::Cancelled {
             self.emit(HarnessEvent::Cancelled);
         }
@@ -478,8 +477,13 @@ mod tests {
         let context = ToolContext::new(workspace.root()).unwrap();
         let log = SessionLog::open(workspace.session_path()).unwrap();
 
-        let agent = AgentLoop::new(provider.clone(), ToolRegistry::with_defaults(), log, context)
-            .with_max_steps(2);
+        let agent = AgentLoop::new(
+            provider.clone(),
+            ToolRegistry::with_defaults(),
+            log,
+            context,
+        )
+        .with_max_steps(2);
 
         let outcome = agent.run_turn("loop forever").await.unwrap();
 

@@ -165,7 +165,10 @@ mod tests {
         let truncated = truncate_output(long);
         assert!(truncated.ends_with("[output truncated]"));
         assert_eq!(
-            truncated.trim_end_matches("[output truncated]").chars().count(),
+            truncated
+                .trim_end_matches("[output truncated]")
+                .chars()
+                .count(),
             MAX_TOOL_OUTPUT_CHARS + 1 // the inserted newline
         );
     }

@@ -6,26 +6,13 @@ use tokio::sync::broadcast;
 /// runtime and presentation layers (CLI, future protocol adapter, telemetry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HarnessEvent {
-    SessionOpened {
-        path: String,
-    },
+    SessionOpened { path: String },
     TurnStarted,
-    StepStarted {
-        step: usize,
-    },
-    TextDelta {
-        text: String,
-    },
-    ToolCallRequested {
-        name: String,
-    },
-    ToolCallFinished {
-        name: String,
-        ok: bool,
-    },
-    TurnFinished {
-        stop_reason: String,
-    },
+    StepStarted { step: usize },
+    TextDelta { text: String },
+    ToolCallRequested { name: String },
+    ToolCallFinished { name: String, ok: bool },
+    TurnFinished { stop_reason: String },
     Cancelled,
 }
 

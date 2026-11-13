@@ -38,9 +38,7 @@ fn resolve_existing(ctx: &ToolContext, raw: &str) -> Result<PathBuf, ToolError> 
 pub(crate) fn resolve_existing_file(ctx: &ToolContext, raw: &str) -> Result<PathBuf, ToolError> {
     let path = resolve_existing(ctx, raw)?;
     if !path.is_file() {
-        return Err(ToolError::InvalidArgs(format!(
-            "not a regular file: {raw}"
-        )));
+        return Err(ToolError::InvalidArgs(format!("not a regular file: {raw}")));
     }
     Ok(path)
 }
@@ -48,9 +46,7 @@ pub(crate) fn resolve_existing_file(ctx: &ToolContext, raw: &str) -> Result<Path
 pub(crate) fn resolve_existing_dir(ctx: &ToolContext, raw: &str) -> Result<PathBuf, ToolError> {
     let path = resolve_existing(ctx, raw)?;
     if !path.is_dir() {
-        return Err(ToolError::InvalidArgs(format!(
-            "not a directory: {raw}"
-        )));
+        return Err(ToolError::InvalidArgs(format!("not a directory: {raw}")));
     }
     Ok(path)
 }
