@@ -37,6 +37,10 @@ class _ClientDisconnect(Exception):
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     block_on_close = False
+    # socketserver defaults to a listen backlog of 5, far below the 32 active
+    # slots allowed here. Bursts of concurrent completions then get refused by
+    # the kernel (observed as connection resets), so accept a full slot wave.
+    request_queue_size = 128
 
     def __init__(self, address, handler):
         self.slots = threading.BoundedSemaphore(32)

@@ -309,3 +309,22 @@ def test_stream_error_event_preserves_billing():
         assert record['error_kind'] == 'provider'
         assert record['cost_usd'] == .02
         assert gateway.infrastructure_failed.is_set()
+
+
+def test_listen_backlog_covers_the_concurrency_allowance():
+    from aqp_bench.gateway import _Server
+
+    # socketserver's default backlog (5) is smaller than the 32 active slots,
+    # which caused intermittent client connection resets during bursts.
+    assert _Server.request_queue_size >= 64
+
+
+def test_parallel_burst_above_the_default_backlog_is_served():
+    with provider(lambda h, b: reply(h, {'usage': USAGE})) as upstream, Gateway('key', upstream=upstream) as gateway:
+        threads = [threading.Thread(target=request, args=(gateway, {'model': 'm'})) for _ in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        records = attempts(gateway, 16)
+        assert len({r['attempt_id'] for r in records}) == 16
